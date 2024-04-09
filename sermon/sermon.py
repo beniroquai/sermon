@@ -193,40 +193,7 @@ class Sermon(object):
         """
         Callback called when editing is completed (after enter is pressed)
         """
-        if len(edit_text) < 1:
-            self.update_status('ok', '')
-            return
-        if edit_text[0] == '%':
-            # Handle magic command.
-            try:
-                result = magic.execute(edit_text[1:])
-                if result['status'] is not None:
-                    self.update_status('ok', result['status'])
-                if result['bytes_to_send'] is not None:
-                    self.serial.write(result['bytes_to_send'])
-            except (util.ArgumentParseError, AttributeError, ValueError) as e:
-                self.update_status('error', str(e))
-            return
-        if self.logging:
-            self.update_status('ok', 'Logging to %s' % self.logfile)
-        processed_command = ('%(frame)s%(command)s%(append)s%(frame)s' %
-                             {'frame': self.frame_text,
-                              'append': self.append_text,
-                              'command': edit_text})
-        # matches list of bytes $(0x08, 0x09, ... )
-        strings = self.byte_list_pattern.split(processed_command)
-        n = 0
-        while n < len(strings) - 1:
-            if strings[n] is None or strings[n] == '':
-                n += 1
-            elif self.byte_list_pattern.match(strings[n]):
-                # list of bytes
-                self.write_list_of_bytes(strings[n+1])
-                n += 2
-            else:
-                self.serial.write(strings[n].encode('latin1'))
-                n += 1
-        self.serial.write(strings[-1].encode('latin1'))
+        self.serial.write(edit_text.encode('latin1'))
 
     def overlay(self, content):
         """
@@ -253,8 +220,10 @@ class Sermon(object):
         """
         Reads serial device and prints results to upper curses window.
         """
+        latestDictionary = ""
+        recordingDictionary = False
         while not self.kill:
-            data = self.serial.read()
+            data = self.serial.readline()
             if len(data) > 0:
                 # Need to reverse \r and \n for curses, otherwise it just
                 # clears the current line instead of making a new line. Also,
@@ -263,8 +232,23 @@ class Sermon(object):
                 try:
                     if data == b'\r':
                         continue
-                    else:
-                        os.write(self.fd, data)
+                    else:         # {"task": "/stage_get"}
+                        # remove \t and \n 
+                        data = data.replace(b'\t', b'').replace(b'\n', b'')
+                        # convert to string
+                        data = data.decode('latin1')
+                        print(data)
+                        if data.find("++") != -1:
+                            recordingDictionary = True
+                            latestDictionary = ""
+                            continue
+                        if recordingDictionary:
+                            if data.find("--") != -1:
+                                recordingDictionary = False
+                                print(latestDictionary)
+                                continue
+                            latestDictionary += data
+                        #os.write(self.fd, data)
                 except UnicodeEncodeError or TypeError:
                     # Handle null bytes in string.
                     raise
@@ -301,8 +285,8 @@ def main():
                         default=False,
                         help='List available serial devices.')
     parser.add_argument('-b', '--baud',
-                        help='Baudrate, defaults to 115200.',
-                        default=115200,
+                        help='Baudrate, defaults to 500000.',
+                        default=500000,
                         type=int)
     parser.add_argument('--append',
                         type=str,
@@ -350,29 +334,8 @@ def main():
         sys.exit()
 
     # If device is not specified, prompt user to select an available device.
-    device = None
-    if not commandline_args.device:
-        try:
-            devices = util.serial_devices()
-            if len(devices) > 0:
-                print('')
-                for n in range(len(devices)):
-                    print('\t%d. %s' % (n+1, devices[n]))
-                print('')
-                device_num = input('Select desired device [%d-%d]: '
-                                   % (1, len(devices)))
-                try:
-                    device = devices[int(device_num) - 1]
-                except (ValueError, IndexError):
-                    print('\nInvalid device selection.')
-                    sys.exit(1)
-            else:
-                print('No serial devices found.')
-                sys.exit(1)
-        except KeyboardInterrupt:
-            sys.exit(1)
-    else:
-        device = commandline_args.device
+    device =  "/dev/cu.wchusbserial110"  # Adjust this to your device's serial port
+    #baudrate = 500000
 
     commandline_args.parity = parity_values[commandline_args.parity]
     commandline_args.stopbits = stopbits_values[commandline_args.stopbits]

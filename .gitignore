@@ -3,3 +3,4 @@ dist
 env*
 sermon.egg*
 .ropeproject
+*.pyc
