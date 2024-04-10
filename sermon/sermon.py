@@ -28,10 +28,6 @@ import sermon.util as util
 from sermon.magics import magic
 from sermon.resources import help_status_str
 
-try:
-    input = raw_input
-except NameError:
-    pass
 
 
 parity_values = {'none': serial.PARITY_NONE,
@@ -130,7 +126,7 @@ class Sermon(object):
     device and prints results to top window. Sends commands to serial device
     after they have been executed in the curses textpad.
     """
-    def __init__(self, device, args):
+    def __init__(self, device, baudrate=500000, byte_size=8, parity=None, stopbits=1, xonxoff=None, rtscts=None, dsrdtr=None):
         # Receive display widgets
         self.receive_window = urwid.Text('')
         body = urwid.ListBox([self.receive_window, urwid.Text('')])
@@ -143,34 +139,26 @@ class Sermon(object):
         self.frame = urwid.Frame(
             body,
             header=urwid.AttrMap(self.header, 'statusbar'),
-            footer=ConsoleEdit(self.on_edit_done, ': '),
+            footer=ConsoleEdit(self.send_text, ': '),
             focus_part='footer')
         palette = [
             ('error', 'light red', 'black'),
             ('ok', 'dark green', 'black'),
             ('statusbar', '', 'black')
         ]
-        self.loop = urwid.MainLoop(self.frame, palette,
-                                   unhandled_input=self.unhandled_key_handler)
-
-        self.fd = self.loop.watch_pipe(self.received_data)
-
         self.kill = False
-        self.append_text = args.append.encode(
-            'latin1').decode('unicode_escape')
-        self.frame_text = args.frame.encode('latin1').decode('unicode_escape')
+        self.append_text = ''
+        self.frame_text = ''
         self.byte_list_pattern = re.compile(
             '(\$\(([^\)]+?)\))|(\${([^\)]+?)})')
         self.device = device
-        self.serial = serial.Serial(device,
-                                    baudrate=args.baud,
-                                    bytesize=args.bytesize,
-                                    parity=args.parity,
-                                    stopbits=args.stopbits,
-                                    xonxoff=args.xonxoff,
-                                    rtscts=args.rtscts,
-                                    dsrdtr=args.dsrdtr,
-                                    timeout=0.1)
+        self.serial = serial.Serial(device,baudrate=baudrate,timeout=1)
+        #,
+        #                            bytesize=byte_size,
+        #                            parity=serial.PARITY_NONE, 
+        #                            stopbits=serial.STOPBITS_ONE,
+        #                            xonxoff=xonxoff,#rtscts=rtscts,#dsrdtr=dsrdtr,
+        #                            timeout=0.1)
         time.sleep(0.1)
         self.serial.flushInput()
         self.conection_msg.set_text(('ok', self.serial.name))
@@ -180,16 +168,11 @@ class Sermon(object):
 
         self.logging = False
         self.logfile = None
-        magic.app = self
-
+        
     def update_status(self, status, text):
         self.status_msg.set_text((status, text))
 
-    def unhandled_key_handler(self, key):
-        if key in ('q', 'esc'):
-            self.loop.widget = self.frame
-
-    def on_edit_done(self, edit_text):
+    def send_text(self, edit_text):
         """
         Callback called when editing is completed (after enter is pressed)
         """
@@ -222,9 +205,12 @@ class Sermon(object):
         """
         latestDictionary = ""
         recordingDictionary = False
+        lineCounter = 0
         while not self.kill:
             data = self.serial.readline()
+            
             if len(data) > 0:
+                print(data)
                 # Need to reverse \r and \n for curses, otherwise it just
                 # clears the current line instead of making a new line. Also,
                 # translate single \n to \n\r so curses returns to the first
@@ -237,7 +223,6 @@ class Sermon(object):
                         data = data.replace(b'\t', b'').replace(b'\n', b'')
                         # convert to string
                         data = data.decode('latin1')
-                        print(data)
                         if data.find("++") != -1:
                             recordingDictionary = True
                             latestDictionary = ""
@@ -245,9 +230,17 @@ class Sermon(object):
                         if recordingDictionary:
                             if data.find("--") != -1:
                                 recordingDictionary = False
+                                lineCounter = 0
                                 print(latestDictionary)
                                 continue
+                            
                             latestDictionary += data
+                            lineCounter += 1
+                        if lineCounter > 50:
+                            recordingDictionary = False
+                            lineCounter = 0
+                            print(latestDictionary)
+                            continue
                         #os.write(self.fd, data)
                 except UnicodeEncodeError or TypeError:
                     # Handle null bytes in string.
@@ -259,7 +252,7 @@ class Sermon(object):
 
     def start(self):
         self.worker.start()
-        self.loop.run()
+        
 
     def stop(self):
         self.kill = True
@@ -273,80 +266,25 @@ class Sermon(object):
 
 
 def main():
-    # Setup command line arguments
-    parser = argparse.ArgumentParser(
-        description='Monitors specified serial device.')
-    parser.add_argument('-v', '--version',
-                        action='store_true',
-                        default=False,
-                        help='Show version.')
-    parser.add_argument('-l', '--list',
-                        action='store_true',
-                        default=False,
-                        help='List available serial devices.')
-    parser.add_argument('-b', '--baud',
-                        help='Baudrate, defaults to 500000.',
-                        default=500000,
-                        type=int)
-    parser.add_argument('--append',
-                        type=str,
-                        default='',
-                        help='Append given string to every command.')
-    parser.add_argument('--frame',
-                        type=str,
-                        default='',
-                        help='Frame command with given string.')
-    parser.add_argument('--bytesize',
-                        choices=[5, 6, 7, 8],
-                        default=8,
-                        type=int,
-                        help='Number of data bits, defaults to 8.')
-    parser.add_argument('--parity',
-                        choices=list(parity_values.keys()),
-                        default='none',
-                        help='Enable parity checking, defaults to none.')
-    parser.add_argument('--stopbits',
-                        choices=['1', '1.5', '2'],
-                        default='1',
-                        help='Number of stop bits, defaults to 1.')
-    parser.add_argument('--xonxoff',
-                        action='store_true',
-                        help='Enable software flow control.')
-    parser.add_argument('--rtscts',
-                        action='store_true',
-                        help='Enable hardware (RTS/CTS) flow control.')
-    parser.add_argument('--dsrdtr',
-                        action='store_true',
-                        help='Enable hardware (DSR/DTR) flow control.')
-    parser.add_argument('device',
-                        default=False,
-                        help='Device name or path.',
-                        nargs='?')
-
-    commandline_args = parser.parse_args()
-
-    # List serial devices and exit for argument '-l'
-    if commandline_args.list:
-        util.print_serial_devices()
-        sys.exit()
-    elif commandline_args.version:
-        print(sermon.__version__)
-        sys.exit()
 
     # If device is not specified, prompt user to select an available device.
     device =  "/dev/cu.wchusbserial110"  # Adjust this to your device's serial port
-    #baudrate = 500000
+    device = "/dev/cu.SLAB_USBtoUART"
+    baudrate = 500000
 
-    commandline_args.parity = parity_values[commandline_args.parity]
-    commandline_args.stopbits = stopbits_values[commandline_args.stopbits]
 
-    try:
-        app = Sermon(device, commandline_args)
-    except serial.serialutil.SerialException as e:
-        print(e)
-        sys.exit(1)
-
-    try:
-        app.start()
-    except KeyboardInterrupt:
-        app.stop()
+    app = Sermon(device, baudrate)
+    #app.start()
+    def toggleLED():
+        while 1:
+            mText = '{"task": "/ledarr_act", "led": {"LEDArrMode": 1, "led_array": [{"id": 0, "r": 22, "g": 45, "b": 29}]}, "qid": 1}' 
+            app.send_text(mText)
+            time.sleep(1)
+            mText = '{"task": "/ledarr_act", "led": {"LEDArrMode": 0, "led_array": [{"id": 0, "r": 22, "g": 45, "b": 29}, {"id": 1, "r": 12, "g": 34, "b": 22}, {"id": 2, "r": 34, "g": 11, "b": 50}, {"id": 3, "r": 32, "g": 22, "b": 2}, {"id": 4, "r": 37, "g": 1, "b": 35}, {"id": 5, "r": 21, "g": 10, "b": 28}, {"id": 6, "r": 52, "g": 16, "b": 5}, {"id": 7, "r": 2, "g": 43, "b": 29}, {"id": 8, "r": 42, "g": 2, "b": 39}, {"id": 9, "r": 21, "g": 21, "b": 22}, {"id": 10, "r": 44, "g": 28, "b": 35}, {"id": 11, "r": 31, "g": 40, "b": 52}, {"id": 12, "r": 25, "g": 45, "b": 15}, {"id": 13, "r": 20, "g": 24, "b": 1}, {"id": 14, "r": 49, "g": 48, "b": 37}, {"id": 15, "r": 54, "g": 3, "b": 41}, {"id": 16, "r": 14, "g": 17, "b": 16}, {"id": 17, "r": 48, "g": 31, "b": 47}, {"id": 18, "r": 43, "g": 24, "b": 10}, {"id": 19, "r": 23, "g": 28, "b": 54}, {"id": 20, "r": 42, "g": 54, "b": 38}, {"id": 21, "r": 32, "g": 51, "b": 4}, {"id": 22, "r": 31, "g": 38, "b": 5}, {"id": 23, "r": 41, "g": 0, "b": 8}, {"id": 24, "r": 26, "g": 6, "b": 44}, {"id": 25, "r": 41, "g": 30, "b": 0}, {"id": 26, "r": 48, "g": 13, "b": 14}, {"id": 27, "r": 48, "g": 52, "b": 24}, {"id": 28, "r": 18, "g": 6, "b": 28}, {"id": 29, "r": 14, "g": 47, "b": 5}, {"id": 30, "r": 2, "g": 31, "b": 24}, {"id": 31, "r": 53, "g": 8, "b": 50}, {"id": 32, "r": 1, "g": 15, "b": 14}, {"id": 33, "r": 19, "g": 18, "b": 39}, {"id": 34, "r": 44, "g": 22, "b": 29}, {"id": 35, "r": 4, "g": 38, "b": 9}, {"id": 36, "r": 1, "g": 28, "b": 54}, {"id": 37, "r": 37, "g": 43, "b": 22}, {"id": 38, "r": 14, "g": 27, "b": 27}, {"id": 39, "r": 22, "g": 10, "b": 49}, {"id": 40, "r": 32, "g": 29, "b": 39}, {"id": 41, "r": 14, "g": 2, "b": 41}, {"id": 42, "r": 39, "g": 37, "b": 35}, {"id": 43, "r": 26, "g": 44, "b": 32}, {"id": 44, "r": 45, "g": 19, "b": 53}, {"id": 45, "r": 44, "g": 26, "b": 37}, {"id": 46, "r": 40, "g": 28, "b": 11}, {"id": 47, "r": 9, "g": 4, "b": 23}, {"id": 48, "r": 41, "g": 22, "b": 31}, {"id": 49, "r": 10, "g": 5, "b": 46}, {"id": 50, "r": 48, "g": 39, "b": 52}, {"id": 51, "r": 33, "g": 15, "b": 26}, {"id": 52, "r": 50, "g": 19, "b": 44}, {"id": 53, "r": 34, "g": 18, "b": 35}, {"id": 54, "r": 6, "g": 0, "b": 39}, {"id": 55, "r": 6, "g": 26, "b": 43}, {"id": 56, "r": 24, "g": 35, "b": 21}, {"id": 57, "r": 47, "g": 8, "b": 31}, {"id": 58, "r": 1, "g": 0, "b": 32}, {"id": 59, "r": 52, "g": 12, "b": 28}, {"id": 60, "r": 39, "g": 53, "b": 5}, {"id": 61, "r": 6, "g": 32, "b": 41}, {"id": 62, "r": 28, "g": 0, "b": 24}, {"id": 63, "r": 34, "g": 46, "b": 27}]}, "qid": 2}'
+            app.send_text(mText)
+            time.sleep(2)
+    import threading
+    mThread = threading.Thread(target=toggleLED)
+    mThread.start()
+    mThread.join()
+    
