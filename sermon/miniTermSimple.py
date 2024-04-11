@@ -18,6 +18,8 @@ class RingBuffer(deque):
 class SimpleSerialComm:
     def __init__(self, port, baudrate=9600):
         self.serial_port = serial.Serial(port, baudrate=baudrate, timeout=0)
+        
+        self.data_queue = queue.Queue()
         time.sleep(1)
         self.alive = False
         self.read_thread = None
@@ -25,11 +27,14 @@ class SimpleSerialComm:
         self.queueFinalizedQueryIDs = RingBuffer(maxQentries)
         self.serial_io_lock = threading.Lock()
         # read for 100 lines
+        nEmptyLines = 0
         for _ in range(1000):
             mLine = self.serial_port.readline()
             print(mLine)
             if mLine==b"":
-                break
+                nEmptyLines +=1
+                if nEmptyLines > 5:
+                    break
             time.sleep(0.02)
             
         
@@ -39,6 +44,9 @@ class SimpleSerialComm:
             self.alive = True
             self.read_thread = threading.Thread(target=self._read_loop)
             self.read_thread.start()
+            self.worker_thread = threading.Thread(target=self._process_data)
+            self.worker_thread.start()
+        
 
     def stop_reading(self):
         """Stop reading loop and close serial port."""
@@ -64,7 +72,7 @@ class SimpleSerialComm:
         parts = s.split('++')
         dictionaries = []
         last_position = 0  # Track the position in the original string
-        
+        remainder = ""  # Track the remaining string after the last successful JSON extraction
         for part in parts:
             # Attempt to extract the JSON string
             json_str = part.split('--')[0].strip()
@@ -75,43 +83,57 @@ class SimpleSerialComm:
                     json_dict = json.loads(json_str)
                     dictionaries.append(json_dict)
                 except json.JSONDecodeError as e:
-                    last_position = last_position -( len(part) + 2)
-                    print(f"Failed to decode JSON: {json_str}. Error: {e}")
-                    break  # Stop processing further on error
+                    try:
+                        #trying to repair the string
+                        import re
+                        match = re.search(r'"qid":(\d+)', json_str)
+                        if match:
+                            qid = int(match.group(1)) 
+                            json_dict = {"qid": qid}
+                            dictionaries.append(json.loads(json.dumps(json_dict)))
+                    except Exception as e:
+                        print(f"Failed to decode JSON: {json_str}. Error: {e}")
+                        last_position = last_position -( len(part) + 2)
+                        #break  # Stop processing further on error
         
-        # Extract the remaining string from the last successful position to the end
-        remainder = s[last_position:]
+                        # Extract the remaining string from the last successful position to the end
+                        remainder += s[last_position:]
     
         return dictionaries, remainder
 
+
     def _read_loop(self):
-        """Read data from serial port and print it."""
-        accumulatedRemainder = ""
-        
+        """Read data from serial port and add it to the queue."""
         while self.alive:
             if self.serial_port.in_waiting:
                 with self.serial_io_lock:
                     data = self.serial_port.read(self.serial_port.in_waiting)
-                # this should happen in the background inside a worker thread
-                
-                try:
-                    print(data.decode('utf-8'), end='', flush=True)
-                    data = data.decode('utf-8')
-                    data = data.replace('\t', '').replace('\n', '').replace('\r', '')
-                    dictionaries, remainder = self.extract_json_objects(accumulatedRemainder + data)
-                    accumulatedRemainder += remainder
-                    print(dictionaries)
-                    for dictionary in dictionaries:
-                        if "qid" in dictionary:
-                            self.queueFinalizedQueryIDs.append(abs(dictionary["qid"]))
-                        else:
-                            print(f"Dictionary does not contain 'qid': {dictionary}")
-                    
-                except Exception as e:
-                    print(f"Failed to decode data: {data}. Error: {e}")
-                    pass
+                self.data_queue.put(data)
             time.sleep(0.05)  # Short delay to prevent CPU overuse
 
+    def _process_data(self):
+        """Process data in a separate thread."""
+        accumulatedRemainder = ""
+        while self.alive:
+            data = self.data_queue.get()
+            try:
+                #print(data.decode('utf-8'), end='', flush=True)
+                data = data.decode('utf-8')
+                data = data.replace('\t', '').replace('\n', '').replace('\r', '') # Remove whitespace characters - better formatting should do better?
+                dictionaries, remainder = self.extract_json_objects(accumulatedRemainder + data)
+                accumulatedRemainder += remainder
+                print(accumulatedRemainder)
+                #print(dictionaries)
+                for dictionary in dictionaries:
+                    if "qid" in dictionary:
+                        self.queueFinalizedQueryIDs.append(abs(dictionary["qid"]))
+                    else:
+                        print(f"Dictionary does not contain 'qid': {dictionary}")
+
+            except Exception as e:
+                print(f"Failed to decode data: {data}. Error: {e}")
+                
+                
     def write_data(self, data):
         """Send data to the serial port."""
         with self.serial_io_lock:
