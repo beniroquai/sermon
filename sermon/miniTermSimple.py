@@ -25,7 +25,7 @@ class SimpleSerialComm:
         self.read_thread = None
         maxQentries = 100
         self.queueFinalizedQueryIDs = RingBuffer(maxQentries)
-        self.serial_io_lock = threading.Lock()
+        #self.serial_io_lock = threading.Lock()
         # read for 100 lines
         nEmptyLines = 0
         for _ in range(1000):
@@ -106,8 +106,8 @@ class SimpleSerialComm:
         """Read data from serial port and add it to the queue."""
         while self.alive:
             if self.serial_port.in_waiting:
-                with self.serial_io_lock:
-                    data = self.serial_port.read(self.serial_port.in_waiting)
+                #with self.serial_io_lock:
+                data = self.serial_port.read(self.serial_port.in_waiting)
                 self.data_queue.put(data)
             time.sleep(0.05)  # Short delay to prevent CPU overuse
 
@@ -132,13 +132,14 @@ class SimpleSerialComm:
 
             except Exception as e:
                 print(f"Failed to decode data: {data}. Error: {e}")
+            time.sleep(0.05)  # Short delay to prevent CPU overuse
                 
                 
     def write_data(self, data):
         """Send data to the serial port."""
-        with self.serial_io_lock:
-            self.serial_port.write(data.encode('utf-8'))
-            self.serial_port.flush() # Ensure data is sent immediately
+        #with self.serial_io_lock:
+        self.serial_port.write(data.encode('utf-8'))
+        self.serial_port.flush() # Ensure data is sent immediately
             
     def send_message(self, data, mTimeout=2, blocking=True):
         try:cqid = json.loads(data)["qid"]
@@ -157,6 +158,7 @@ class SimpleSerialComm:
                 if cqid in qids:
                     print(f"Received response for query ID: {cqid}")
                     break
+                time.sleep(0.05)
             except queue.Empty:
                 #print("Waiting for response...")
                 pass
