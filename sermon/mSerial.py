@@ -49,6 +49,10 @@ class Serial:
         self.serial_write_lock = threading.Lock()  # Lock for writing to serial port
         self.isReadingLoopRunning = False          # Flag to indicate if the serial port is being read
         self.isWritingLoopRunning = False           # Flag to indicate if the serial port is being written to
+                
+        # setup callback list for parent modules
+        self.callBackList = []
+        
         # get hold on the logger
         if self._parent is None:
             self._logger = logging.getLogger(__name__)
@@ -327,6 +331,13 @@ class Serial:
                 #self._logger.debug(data.decode('utf-8'), end='', flush=True)
                 data = data.decode('utf-8')
                 data = data.replace('\t', '').replace('\n', '').replace('\r', '') # Remove whitespace characters - better formatting should do better?
+                
+                # detect a reboot of the device and return the current QIDs
+                if data.find("reboot") >= 0:
+                    self._logger.warning("Device rebooted")
+                    self.resetLastCommand = True
+                    continue
+                
                 dictionaries, remainder = self.extract_json_objects(accumulatedRemainder + data)
                 accumulatedRemainder += remainder
                 self._logger.debug(accumulatedRemainder)
@@ -340,7 +351,18 @@ class Serial:
                             self.responses[dictionary["qid"]].append(dictionary)
                         else:
                             self.responses[dictionary["qid"]] = [dictionary]
+                            
                         if self.DEBUG: self._logger.debug(f"Received response for query ID: {dictionary['qid'], dictionary}")
+                        
+                        if len(self.callBackList) > 0:
+                            for callback in self.callBackList:
+                                # check if json has key
+                                try:
+                                    if callback["pattern"] in dictionary:
+                                        callback["callbackfct"](dictionary)
+                                except Exception as e:
+                                    self._logger.error("[ProcessCommands]: "+str(e))
+
                     else:
                         self._logger.debug(f"Dictionary does not contain 'qid': {dictionary}")
 
@@ -349,6 +371,13 @@ class Serial:
             time.sleep(0.05)  # Short delay to prevent CPU overuse
         self.isWritingLoopRunning = False
                 
+    def register_callback(self, callback, pattern):
+        '''
+        we need to add a callback function to a list of callbacks that will be read during the serial communication
+        loop
+        '''
+        self.callBackList.append({"callbackfct":callback, "pattern":pattern})
+
     def write_data(self, data: str):
         """Send data to the serial port."""
         with self.serial_write_lock:
@@ -392,7 +421,6 @@ class Serial:
                 # compare with any received responses
                 qids = self.queueFinalizedQueryIDs.get()
                 if cqid in qids and qids.count(cqid) >= nResponses:
-                    self._logger.debug(f"Received response for query ID: {cqid}")
                     return self.responses[cqid]
                 if -cqid in qids:
                     self._logger.debug("You have sent the wrong command!")
@@ -402,8 +430,28 @@ class Serial:
                 pass
             time.sleep(0.05) # short delay to prevent CPU overuse
 
-            
+    def get_json(self, path, timeout=1):
+        message = {"task":path}
+        message = json.dumps(message)
+        return self.sendMessage(message, nResponses=0, timeout=timeout)
 
+    def post_json(self, path, payload, getReturn=True, nResponses=1, timeout=100):
+        """Make an HTTP POST request and return the JSON response"""
+        if payload is None:
+            payload = {}
+        if "task" not in payload:
+            payload["task"] = path
+
+        # write message to the serial
+        if not getReturn:
+            nResponses = -1
+        if self.cmdCallBackFct is not None: # TODO: what did we need this for?!
+            self.cmdCallBackFct(payload)
+            return "OK"
+        else:
+            writeResult = self.sendMessage(data=payload, nResponses=nResponses, mTimeout=timeout, blocking=getReturn)
+            return writeResult
+        
 # Example of using SimpleSerialComm
 #python /Users/bene/mambaforge/envs/imswitch/lib/python3.9/site-packages/serial/tools/miniterm.py /dev/cu.SLAB_USBtoUART 500000
 
@@ -418,7 +466,7 @@ if __name__ == '__main__':
         
         # short test
         message = '{"task":"/motor_act", "motor": { "steppers": [ { "stepperid": 1, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}, { "stepperid": 2, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}]}, "qid":'+str(cqid)+'}' 
-        mSerial.sendMessage(data=message)
+        mSerial.sendMessage(data=message, mTimeout=10)
         cqid += 1
         
         # long test split  
@@ -430,7 +478,7 @@ if __name__ == '__main__':
         messages = [message1, message2]
         
         for message in messages:
-            mSerial.sendMessage(data=message, blocking=True)
+            mSerial.sendMessage(data=message, blocking=True, mTimeout=1)
         
         # very short test
         message = '{"task": "/state_get", "qid": '+str(cqid)+'}'
