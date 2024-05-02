@@ -20,6 +20,7 @@ class SimpleSerialComm:
         self.serial_port = serial.Serial(port, baudrate=baudrate, timeout=0)
         
         self.data_queue = queue.Queue()
+        self.in_waiting = False
         time.sleep(1)
         self.alive = False
         self.read_thread = None
@@ -123,7 +124,7 @@ class SimpleSerialComm:
                 dictionaries, remainder = self.extract_json_objects(accumulatedRemainder + data)
                 accumulatedRemainder += remainder
                 print(accumulatedRemainder)
-                #print(dictionaries)
+                print(dictionaries)
                 for dictionary in dictionaries:
                     if "qid" in dictionary:
                         self.queueFinalizedQueryIDs.append(abs(dictionary["qid"]))
@@ -141,13 +142,17 @@ class SimpleSerialComm:
         self.serial_port.write(data.encode('utf-8'))
         self.serial_port.flush() # Ensure data is sent immediately
             
-    def send_message(self, data, mTimeout=2, blocking=True):
+    def send_message(self, data, nResponses=1, mTimeout=20, blocking=True):
         try:cqid = json.loads(data)["qid"]
         except: blocking = False
         print (f"Sending message: {cqid}, blocking: {blocking}, message length: {len(data)}")
         self.write_data(data)
         # wait for the response
         cTime = time.time()
+        if nResponses == 0 or mTimeout <= 0:
+            blocking = False
+            return cqid
+        
         while blocking:
             try:
                 if time.time() - cTime > mTimeout:
@@ -155,7 +160,7 @@ class SimpleSerialComm:
                     break
                 # compare with any received responses
                 qids = self.queueFinalizedQueryIDs.get()
-                if cqid in qids:
+                if cqid in qids and qids.count(cqid) >= nResponses:
                     print(f"Received response for query ID: {cqid}")
                     break
                 time.sleep(0.05)
@@ -190,9 +195,15 @@ if __name__ == '__main__':
         while True:
             
             # short test
-            message = '{"task":"/notor_act", "motor": { "steppers": [ { "stepperid": 1, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}, { "stepperid": 2, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}]}, "qid":'+str(cqid)+'}' 
-            comm.send_message(data=message)
+            message = '{"task":"/motor_act", "motor": { "steppers": [ { "stepperid": 1, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}, { "stepperid": 2, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}]}, "qid":'+str(cqid)+'}' 
+            comm.send_message(data=message, nResponses=3)
             cqid += 1
+            
+            # short non-blocking test
+            message = '{"task":"/motor_act", "motor": { "steppers": [ { "stepperid": 1, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}, { "stepperid": 2, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}]}, "qid":'+str(cqid)+'}' 
+            comm.send_message(data=message,blocking=False)
+            cqid += 1
+            
             
             # long test split  
             message1 = '{"task": "/ledarr_act", "led": {"LEDArrMode": 0, "led_array": [{"id": 0, "r": 22, "g": 45, "b": 29}, {"id": 1, "r": 12, "g": 34, "b": 22}, {"id": 2, "r": 34, "g": 11, "b": 50}, {"id": 3, "r": 32, "g": 22, "b": 2}, {"id": 4, "r": 37, "g": 1, "b": 35}, {"id": 5, "r": 21, "g": 10, "b": 28}, {"id": 6, "r": 52, "g": 16, "b": 5}, {"id": 7, "r": 2, "g": 43, "b": 29}, {"id": 8, "r": 42, "g": 2, "b": 39}, {"id": 9, "r": 21, "g": 21, "b": 22}, {"id": 10, "r": 44, "g": 28, "b": 35}, {"id": 11, "r": 31, "g": 40, "b": 52}, {"id": 12, "r": 25, "g": 45, "b": 15}, {"id": 13, "r": 20, "g": 24, "b": 1}, {"id": 14, "r": 49, "g": 48, "b": 37}, {"id": 15, "r": 54, "g": 3, "b": 41}, {"id": 16, "r": 14, "g": 17, "b": 16}, {"id": 17, "r": 48, "g": 31, "b": 47}, {"id": 18, "r": 43, "g": 24, "b": 10}, {"id": 19, "r": 23, "g": 28, "b": 54}]}, "qid": '+str(cqid)+'}'
