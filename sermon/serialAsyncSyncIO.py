@@ -1,14 +1,17 @@
 import asyncio
-import serial
-import json
+import inspect
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from serial.tools import list_ports
 import logging
 import time
 from asynciohelper import *
+import serial
+import json
+from asynciohelper import convert_async_to_sync
 
 T_SERIAL_WARMUP = .5
-
 class RingBuffer(deque):
     def __init__(self, size_max):
         super().__init__(maxlen=size_max)
@@ -19,6 +22,7 @@ class RingBuffer(deque):
 
     def get(self):
         return list(self)
+    
 
 class Serial:
     def __init__(self, port, baudrate=115200, timeout=5, identity="UC2_Feather", parent=None, DEBUG=False):
@@ -31,7 +35,6 @@ class Serial:
         self.serial_device = None
         self.is_connected = False
         self.resetLastCommand = False
-        self.data_queue = asyncio.Queue()
         self.maxQentries = 100
         self.queueFinalizedQueryIDs = RingBuffer(self.maxQentries)
         self.identifier_counter = 0
@@ -49,27 +52,16 @@ class Serial:
             self._logger = self._parent.logger
 
         # Ensure the event loop is running
-        
-        # Ensure the event loop is running
         self.loop = None
         self.executor = ThreadPoolExecutor(max_workers=4)
         self._ensure_event_loop()
         
+        # Asyncio queue should be created after the event loop is ensured
+        self.data_queue = asyncio.Queue(loop=self.loop)
+
         # Convert async methods to sync
         self.open_sync = convert_async_to_sync(self.open, self.loop, self.executor)
         self.send_message_sync = convert_async_to_sync(self.sendMessage, self.loop, self.executor)
-
-    def open_sync(self, port=None, baudrate=None):
-        self._ensure_event_loop()
-        if baudrate is None:
-            baudrate = self.baudrate
-        self.serial_device = self.openDevice(port, baudrate)
-        self.is_connected = True
-        self.start_reading_sync()
-
-    def send_message_sync(self, data: str, nResponses: int = 1, mTimeout: float = 20.0, blocking: bool = True):
-        self._ensure_event_loop()
-        return asyncio.run_coroutine_threadsafe(self.sendMessage(data, nResponses, mTimeout, blocking), self.loop).result()
 
     def _ensure_event_loop(self):
         if not self.loop or not self.loop.is_running():
@@ -87,6 +79,18 @@ class Serial:
         self.serial_device = await asyncio.get_event_loop().run_in_executor(None, self.openDevice, port, baudrate)
         self.is_connected = True
         await self.start_reading()
+
+    def open_sync(self, port=None, baudrate=None):
+        self._ensure_event_loop()
+        if baudrate is None:
+            baudrate = self.baudrate
+        self.serial_device = self.openDevice(port, baudrate)
+        self.is_connected = True
+        self.start_reading_sync()
+
+    def start_reading_sync(self):
+        future = asyncio.run_coroutine_threadsafe(self.start_reading(), self.loop)
+        future.result()  # Wait for the coroutine to start
 
     def close(self):
         self.stop_reading()
@@ -198,9 +202,9 @@ class Serial:
     async def start_reading(self):
         if self.is_connected:
             if not self.isReadingLoopRunning:
-                asyncio.create_task(self._read_loop())
+                asyncio.run_coroutine_threadsafe(self._read_loop(), self.loop)
             if not self.isWritingLoopRunning:
-                asyncio.create_task(self._process_data())
+                asyncio.run_coroutine_threadsafe(self._process_data(), self.loop)
 
     def stop_reading(self):
         self.is_connected = False
@@ -347,6 +351,9 @@ class Serial:
         else:
             return await self.sendMessage(data=payload, nResponses=nResponses, mTimeout=timeout, blocking=getReturn)
 
+    def send_message_sync(self, data: str, nResponses: int = 1, mTimeout: float = 20.0, blocking: bool = True):
+        self._ensure_event_loop()
+        return asyncio.run_coroutine_threadsafe(self.sendMessage(data, nResponses, mTimeout, blocking), self.loop).result()
 
 # Example of using SimpleSerialComm
 async def main():
@@ -389,4 +396,5 @@ if __name__ == '__main__':
         # Ensure the event loop is running for synchronous execution
         mSerial.open_sync(port, baudrate)
         
-        mSerial.send_message_sync('{"task":"/motor_act", "motor": { "steppers": [ { "stepperid": 1, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}, { "stepperid": 2, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}]}, "qid":1}', blocking=True, mTimeout=10)
+        mResult = mSerial.send_message_sync('{"task":"/motor_act", "motor": { "steppers": [ { "stepperid": 1, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}, { "stepperid": 2, "position": 1000, "speed": 5000, "isabs": 0, "isaccel":0}]}, "qid":1}', nResponses=3, blocking=True, mTimeout=10)
+        print(mResult)

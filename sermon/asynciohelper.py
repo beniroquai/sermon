@@ -1,9 +1,6 @@
 import asyncio
-import inspect
-import threading
 from functools import wraps
-from concurrent.futures import ThreadPoolExecutor
-
+# Borrowed from Wei: https://github.com/imjoy-team/imjoy-rpc/blob/015378cc5fa3310bfee7ec16237f19a9d1c461bf/python/imjoy_rpc/hypha/sync.py#L59
 def convert_sync_to_async(sync_func, loop, executor):
     """Convert a synchronous function to an asynchronous function."""
     if asyncio.iscoroutinefunction(sync_func):
